@@ -69,30 +69,22 @@ XP_PASSWORD_FIELD    = '//*[@id="password-field"]'
 XP_CONTINUE_PASSWORD = '//*[@id="__next"]/div/main/div[2]/div/div/div/div[2]/form/button[2]'
 
 # "Search all jobs" link on the post-login homepage
-XP_SEARCH_ALL_JOBS   = '//*[@id="HomeMain_trueup-home__NpNWP"]/div[1]/div[3]/div/div/div/div/div[2]/div/a[2]/div/div'
+XP_SEARCH_ALL_JOBS   = "//a[contains(., 'Search all jobs') or contains(@href, '/jobs')]"
 
 # Filters on /jobs page
-XP_PAST_WEEK_FILTER  = '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[1]/div/div/div[4]/div[1]/div[1]/div/div/ul/li[2]/label'
-XP_LOCATION_SEARCH   = '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[1]/div/div/div[4]/div[3]/div[1]/div/div/div[2]/div/div/form/input'
-XP_LOCATION_FIRST    = '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[1]/div/div/div[4]/div[3]/div[1]/div/div/div[2]/ul/li[1]/label'
+XP_PAST_WEEK_FILTER  = "//label[contains(., 'Past week') or contains(., 'Past Week')]"
+XP_LOCATION_SEARCH   = "//input[contains(@placeholder, 'Location') or contains(@placeholder, 'location') or contains(@placeholder, 'City') or contains(@placeholder, 'country')]"
+XP_LOCATION_FIRST    = "//li[1]//label"
 
 # Search box on /jobs
-XP_SEARCH_BOX        = '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[1]/div/div/div[1]/form/input'
+XP_SEARCH_BOX        = "//input[contains(@placeholder, 'Search') or contains(@placeholder, 'search') or @type='search' or (@type='text' and not(contains(@placeholder, 'Location')))]"
 
-# Job card links — wildcard across all div[N] positions on the results page.
-# Pattern from user: .../div[2]/div[2]/div/div/div/div[N]/div/div/div[1]/div[2]/div[1]/div/a
-# We use a wildcard (*) for div[N] so one XPath covers all cards.
-XP_JOB_LINKS = (
-    '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[2]'
-    '/div/div/div/div/div/div/div[1]/div[2]/div[1]/div/a'
-)
+# Job card links
+# Broad match for any links within the main content area that look like job or role links.
+XP_JOB_LINKS = "//main//a[contains(@href, '/job') or contains(@href, '/role') or contains(@class, 'job') or contains(@class, 'Job')]"
 
-# "Show more" button — appears after ~16 cards as the last sibling div/button.
-# The index (div[17]) is dynamic; we match any button inside that container.
-XP_SHOW_MORE = (
-    '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[2]'
-    '/div/div/div/div/button'
-)
+# "Show more" button
+XP_SHOW_MORE = "//main//button[contains(normalize-space(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')), 'show more') or contains(normalize-space(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')), 'load more') or contains(normalize-space(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')), 'next page')]"
 
 # Output file
 OUTPUT_JSON = "output_jobs.json"
