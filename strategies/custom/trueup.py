@@ -1,28 +1,7 @@
 """
-TrueUp.io Job Scraper Strategy
-================================
-Scrapes job listings from https://trueup.io/jobs
+TrueUp.io My Jobs scraper — post-login UI.
 
-Exact Flow (per user spec):
-  1. login()
-       a. Open https://trueup.io
-       b. Click the Login button in the nav
-       c. Navigate to sign-in page
-       d. Enter email → Continue → Enter password → Continue
-       e. Wait 60 seconds for manual OTP entry
-       f. After OTP, the site redirects to https://trueup.io/
-       g. Click "Search all jobs" link → navigates to /jobs
-
-  2. find_jobs()  — for each keyword:
-       a. Navigate to /jobs
-       b. Apply "Past week" date filter
-       c. Apply Location filters: United States + San Francisco Bay Area
-       d. Type keyword in search box → ENTER
-       e. For each job card: click link → new window opens → capture URL
-       f. Save each captured URL to output_json
-       g. Close new window → repeat for next card
-
-All XPaths are exactly as provided by the user.
+Flow: login → My Jobs nav → Past week filter → click job links → save ATS URLs.
 """
 
 import os
@@ -37,99 +16,41 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException,
-    NoSuchElementException,
     StaleElementReferenceException,
 )
 
 from strategies.base import BaseStrategy
 from core.logger import logger
 from core.human_behavior import HumanBehavior
-from models.config_models import JobListing
 
+# ── URLs ──────────────────────────────────────────────────────────────────────
+BASE_URL = "https://trueup.io"
+MYJOBS_URL = "https://trueup.io/myjobs"
+SIGNIN_URL = "https://trueup.io/sign-in?redirect_url=%2Fmyjobs"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# URLs
-# ──────────────────────────────────────────────────────────────────────────────
-
-BASE_URL  = "https://trueup.io"
-JOBS_URL  = "https://trueup.io/jobs"
-SIGNIN_URL = "https://trueup.io/sign-in?redirect_url=%2Fjobs"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Exact XPaths (as provided by user)
-# ──────────────────────────────────────────────────────────────────────────────
-
-# Login button on the homepage nav
-XP_NAV_LOGIN_BTN     = '//*[@id="main-nav"]/nav/div[2]/div[2]/button[1]'
-
-# Sign-in form fields
-XP_EMAIL_FIELD       = '//*[@id="identifier-field"]'
-XP_CONTINUE_EMAIL    = '//*[@id="__next"]/div/main/div[2]/div/div/div[1]/div[2]/form/div[2]/button/span'
-XP_PASSWORD_FIELD    = '//*[@id="password-field"]'
+# ── XPaths (My Jobs UI) ───────────────────────────────────────────────────────
+XP_NAV_LOGIN_BTN = '//*[@id="main-nav"]/nav/div[2]/div[2]/button[1]'
+XP_EMAIL_FIELD = '//*[@id="identifier-field"]'
+XP_CONTINUE_EMAIL = '//*[@id="__next"]/div/main/div[2]/div/div/div[1]/div[2]/form/div[2]/button/span'
+XP_PASSWORD_FIELD = '//*[@id="password-field"]'
 XP_CONTINUE_PASSWORD = '//*[@id="__next"]/div/main/div[2]/div/div/div/div[2]/form/button[2]'
 
-# "Search all jobs" link on the post-login homepage
-XP_SEARCH_ALL_JOBS   = '//*[@id="HomeMain_trueup-home__NpNWP"]/div[1]/div[3]/div/div/div/div/div[2]/div/a[2]/div/div'
-
-# Filters on /jobs page
-XP_PAST_WEEK_FILTER  = '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[1]/div/div/div[4]/div[1]/div[1]/div/div/ul/li[2]/label'
-XP_LOCATION_SEARCH   = '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[1]/div/div/div[4]/div[3]/div[1]/div/div/div[2]/div/div/form/input'
-XP_LOCATION_FIRST    = '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[1]/div/div/div[4]/div[3]/div[1]/div/div/div[2]/ul/li[1]/label'
-
-# Search box on /jobs
-XP_SEARCH_BOX        = '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[1]/div/div/div[1]/form/input'
-
-# Job card links — wildcard across all div[N] positions on the results page.
-# Pattern from user: .../div[2]/div[2]/div/div/div/div[N]/div/div/div[1]/div[2]/div[1]/div/a
-# We use a wildcard (*) for div[N] so one XPath covers all cards.
-XP_JOB_LINKS = (
-    '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[2]'
-    '/div/div/div/div/div/div/div[1]/div[2]/div[1]/div/a'
+XP_NAV_JOBS = '//*[@id="main-nav"]/nav/nav/div[1]/ul/li[1]/a'
+XP_DATE_FILTER_BTN = '//*[@id="__next"]/div/main/div/div/div/div[1]/div/form/div/div/button'
+XP_MYJOBS_JOB_LINKS = (
+    '//*[@id="__next"]/div/main/div/div/div/div[1]/div/div[2]/div/div/div'
+    '/div[1]/div[2]/div[1]/div/a'
+)
+XP_MYJOBS_SHOW_MORE = (
+    '//*[@id="__next"]/div/main/div/div/div/div[1]/div/div[2]/button'
 )
 
-# "Show more" button — appears after ~16 cards as the last sibling div/button.
-# The index (div[17]) is dynamic; we match any button inside that container.
-XP_SHOW_MORE = (
-    '//*[@id="__next"]/div/main/div[2]/div/div/div/div/div[2]/div[2]'
-    '/div/div/div/div/button'
-)
-
-# Output file
 OUTPUT_JSON = "output_jobs.json"
-
-# OTP wait (seconds)
 OTP_WAIT_SECONDS = 60
 
 
-def _save_keyword_batch(keyword: str, jobs: list):
-    """Append all jobs collected for one keyword to OUTPUT_JSON."""
-    if not jobs:
-        return
-    try:
-        data = []
-        if os.path.exists(OUTPUT_JSON) and os.path.getsize(OUTPUT_JSON) > 0:
-            with open(OUTPUT_JSON, "r", encoding="utf-8", errors="ignore") as f:
-                try:
-                    data = json.load(f)
-                except json.JSONDecodeError:
-                    data = []
-        data.extend(jobs)
-        with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-        logger.info(
-            "  💾 Saved %d jobs for keyword '%s' → %s (total: %d)",
-            len(jobs), keyword, OUTPUT_JSON, len(data)
-        )
-    except Exception as ex:
-        logger.warning("  ⚠️ Failed to save batch for keyword '%s': %s", keyword, ex)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────────
-
 def _load_trueup_config() -> dict:
-    """Load optional config/trueup.json. Falls back to env vars."""
+    """Load optional config/trueup.json."""
     try:
         cfg_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -145,22 +66,22 @@ def _load_trueup_config() -> dict:
 
 
 def _job_id_from_url(url: str) -> str:
-    """Extract a unique job identifier from an ATS URL."""
     if not url:
         return ""
-    # Usually jobs have /job/ID or /jobs/ID
+    m = re.search(r"[?&]gh_jid=(\d+)", url)
+    if m:
+        return m.group(1)
     m = re.search(r"/jobs?/([a-zA-Z0-9_-]+)", url)
     if m:
         return m.group(1)
-    
-    # Fallback to last segment
     parts = [p for p in url.split("?")[0].rstrip("/").split("/") if p]
     base_id = parts[-1] if parts else ""
-    return base_id[-50:] if base_id else str(hash(url))
+    if base_id and base_id.lower() not in ("job", "jobs", "careers", "career"):
+        return base_id[-50:]
+    return str(abs(hash(url)))[:16]
 
 
 def _append_to_output(job: dict):
-    """Append a single job record to OUTPUT_JSON, creating the file if needed."""
     try:
         data = []
         if os.path.exists(OUTPUT_JSON) and os.path.getsize(OUTPUT_JSON) > 0:
@@ -177,70 +98,37 @@ def _append_to_output(job: dict):
         logger.warning("   ⚠️ Failed to save to %s: %s", OUTPUT_JSON, ex)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Strategy
-# ──────────────────────────────────────────────────────────────────────────────
-
 class TrueUpStrategy(BaseStrategy):
-    """
-    Selenium strategy for https://trueup.io/jobs.
-
-    Exact login + filter + extraction flow per user specification.
-    """
+    """Scrape personalized My Jobs feed on TrueUp.io."""
 
     def __init__(self, driver, job_site=None, selectors=None, db_session=None):
         if job_site is None:
             class _FakeJobSite:
                 company_name = "TrueUp"
-                search_url_template = JOBS_URL
+                search_url_template = MYJOBS_URL
                 id = None
+
             job_site = _FakeJobSite()
 
         super().__init__(driver, job_site, selectors or {})
-        self.db_session = db_session
-        self.human      = HumanBehavior(driver)
+        self.human = HumanBehavior(driver)
 
         cfg = _load_trueup_config()
-
-        raw_kw = cfg.get("search_keywords") or os.environ.get("TRUEUP_KEYWORDS", "ai,genai")
-        if isinstance(raw_kw, list):
-            self._keywords = [str(k).strip() for k in raw_kw if str(k).strip()]
-        else:
-            self._keywords = [kw.strip() for kw in str(raw_kw).split(",") if kw.strip()]
-        if not self._keywords:
-            self._keywords = ["ai", "genai"]
-
-        self._email    = os.environ.get("TRUEUP_EMAIL", "")
+        self._date_posted = (cfg.get("date_posted") or "Past week").strip()
+        self._email = os.environ.get("TRUEUP_EMAIL", "")
         self._password = os.environ.get("TRUEUP_PASSWORD", "")
 
         if not self._email or not self._password:
-            logger.warning(
-                "⚠️ TRUEUP_EMAIL / TRUEUP_PASSWORD not set — login will not work."
-            )
+            logger.warning("⚠️ TRUEUP_EMAIL / TRUEUP_PASSWORD not set")
 
         logger.info(
-            "✅ TrueUpStrategy ready — keywords=%s  auth=%s",
-            self._keywords,
+            "✅ TrueUpStrategy ready — date=%s  auth=%s",
+            self._date_posted,
             "configured" if self._email else "MISSING",
         )
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Public Interface: login
-    # ────────────────────────────────────────────────────────────────────────
-
     def login(self) -> bool:
-        """
-        Full login flow:
-          1. Open https://trueup.io (homepage)
-          2. Click the nav Login button
-          3. Navigate to sign-in URL with redirect param
-          4. Enter email → Continue
-          5. Enter password → Continue
-          6. Wait OTP_WAIT_SECONDS for manual OTP entry
-          7. Site auto-redirects to https://trueup.io/ after OTP
-          8. Click "Search all jobs" → lands on /jobs
-        """
-        logger.info("🔐 Step 1: Opening TrueUp homepage — %s", BASE_URL)
+        logger.info("🔐 Opening %s", BASE_URL)
         try:
             self.driver.get(BASE_URL)
             WebDriverWait(self.driver, 20).until(
@@ -248,11 +136,9 @@ class TrueUpStrategy(BaseStrategy):
             )
             time.sleep(3)
         except Exception as exc:
-            logger.error("❌ Could not open TrueUp homepage: %s", exc)
+            logger.error("❌ Could not open homepage: %s", exc)
             return False
 
-        # ── Click nav Login button ───────────────────────────────────────────
-        logger.info("🔐 Step 2: Clicking Login button in nav...")
         try:
             login_btn = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, XP_NAV_LOGIN_BTN))
@@ -261,526 +147,224 @@ class TrueUpStrategy(BaseStrategy):
                 login_btn.click()
             except Exception:
                 self.driver.execute_script("arguments[0].click();", login_btn)
-            logger.info("   ✅ Clicked Login button")
             time.sleep(2)
         except Exception as exc:
-            logger.warning("   ⚠️ Nav login button not found or not clickable: %s — navigating directly to sign-in", exc)
+            logger.warning("⚠️ Nav login failed: %s — going to sign-in", exc)
 
-        # ── Navigate to sign-in URL ──────────────────────────────────────────
-        logger.info("🔐 Step 3: Navigating to sign-in page...")
-        try:
-            self.driver.get(SIGNIN_URL)
-            time.sleep(5)  # Let Clerk/React form fully render
-        except Exception as exc:
-            logger.error("❌ Could not navigate to sign-in: %s", exc)
-            return False
+        self.driver.get(SIGNIN_URL)
+        time.sleep(5)
 
-        # ── Enter email ──────────────────────────────────────────────────────
-        logger.info("🔐 Step 4: Entering email...")
         try:
             email_el = WebDriverWait(self.driver, 15).until(
                 EC.element_to_be_clickable((By.XPATH, XP_EMAIL_FIELD))
             )
             email_el.clear()
-            self.human.random_delay(0.3, 0.6)
             self.human.human_type(email_el, self._email)
-            logger.info("   ✅ Email entered")
         except Exception as exc:
-            logger.error("❌ Could not find email field: %s", exc)
+            logger.error("❌ Email field: %s", exc)
             return False
 
-        # ── Click Continue (email) ───────────────────────────────────────────
-        logger.info("🔐 Step 5: Clicking Continue (email)...")
         try:
-            cont_el = WebDriverWait(self.driver, 10).until(
+            cont = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, XP_CONTINUE_EMAIL))
             )
-            try:
-                cont_el.click()
-            except Exception:
-                self.driver.execute_script("arguments[0].click();", cont_el)
-            logger.info("   ✅ Clicked Continue (email)")
-        except Exception as exc:
-            logger.warning("   ⚠️ Continue (email) via XPath failed: %s — pressing ENTER", exc)
-            try:
-                email_el.send_keys(Keys.RETURN)
-            except Exception:
-                pass
-        time.sleep(4)  # Wait for password form to render
+            cont.click()
+        except Exception:
+            email_el.send_keys(Keys.RETURN)
+        time.sleep(4)
 
-        # ── Enter password ───────────────────────────────────────────────────
-        logger.info("🔐 Step 6: Entering password...")
         try:
             pwd_el = WebDriverWait(self.driver, 15).until(
                 EC.element_to_be_clickable((By.XPATH, XP_PASSWORD_FIELD))
             )
             pwd_el.clear()
-            self.human.random_delay(0.3, 0.6)
             self.human.human_type(pwd_el, self._password)
-            logger.info("   ✅ Password entered")
         except Exception as exc:
-            logger.error("❌ Could not find password field: %s", exc)
+            logger.error("❌ Password field: %s", exc)
             return False
 
-        # ── Click Continue (password) ────────────────────────────────────────
-        logger.info("🔐 Step 7: Clicking Continue (password)...")
         try:
-            cont_pwd = WebDriverWait(self.driver, 10).until(
+            cont = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, XP_CONTINUE_PASSWORD))
             )
-            try:
-                cont_pwd.click()
-            except Exception:
-                self.driver.execute_script("arguments[0].click();", cont_pwd)
-            logger.info("   ✅ Clicked Continue (password)")
-        except Exception as exc:
-            logger.warning("   ⚠️ Continue (password) via XPath failed: %s — pressing ENTER", exc)
-            try:
-                pwd_el.send_keys(Keys.RETURN)
-            except Exception:
-                pass
+            cont.click()
+        except Exception:
+            pwd_el.send_keys(Keys.RETURN)
 
-        # ── Wait for OTP ─────────────────────────────────────────────────────
-        logger.warning("=" * 60)
-        logger.warning("⏳ OTP REQUIRED — You have %d seconds to enter the OTP in the browser!", OTP_WAIT_SECONDS)
-        logger.warning("=" * 60)
+        logger.warning("⏳ Enter OTP in browser — waiting %d seconds", OTP_WAIT_SECONDS)
         for remaining in range(OTP_WAIT_SECONDS, 0, -10):
-            logger.info("   ... %d seconds remaining for OTP ...", remaining)
+            logger.info("   ... %d seconds left ...", remaining)
             time.sleep(10)
-        logger.info("   ⏳ OTP wait complete. Checking redirect...")
         time.sleep(3)
-
-        # ── Wait for redirect to homepage ────────────────────────────────────
-        current_url = self.driver.current_url
-        logger.info("   Current URL after OTP: %s", current_url)
-
-        # ── Click "Search all jobs" on post-login homepage ───────────────────
-        if "trueup.io/jobs" not in current_url:
-            logger.info("🔐 Step 8: Clicking 'Search all jobs' link...")
-            try:
-                search_all = WebDriverWait(self.driver, 15).until(
-                    EC.element_to_be_clickable((By.XPATH, XP_SEARCH_ALL_JOBS))
-                )
-                try:
-                    search_all.click()
-                except Exception:
-                    self.driver.execute_script("arguments[0].click();", search_all)
-                logger.info("   ✅ Clicked 'Search all jobs'")
-                WebDriverWait(self.driver, 15).until(
-                    EC.url_contains("/jobs")
-                )
-                time.sleep(3)
-            except Exception as exc:
-                logger.warning("   ⚠️ 'Search all jobs' click failed: %s — navigating directly", exc)
-                self.driver.get(JOBS_URL)
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
-                time.sleep(3)
-
-        logger.info("✅ Login complete! URL: %s", self.driver.current_url)
+        logger.info("✅ Login complete — %s", self.driver.current_url)
         return True
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Public Interface: find_jobs
-    # ────────────────────────────────────────────────────────────────────────
+    def navigate_to_my_jobs(self) -> bool:
+        logger.info("📂 Opening My Jobs...")
+        try:
+            nav = WebDriverWait(self.driver, 15).until(
+                EC.element_to_be_clickable((By.XPATH, XP_NAV_JOBS))
+            )
+            try:
+                nav.click()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", nav)
+            WebDriverWait(self.driver, 20).until(
+                lambda d: "myjobs" in d.current_url or "jobs" in d.current_url
+            )
+            self.human.random_delay(2, 4)
+            return True
+        except Exception as exc:
+            logger.warning("⚠️ Nav Jobs failed: %s — direct URL", exc)
+            self.driver.get(MYJOBS_URL)
+            WebDriverWait(self.driver, 20).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            return True
+
+    def apply_past_week_dropdown(self) -> bool:
+        logger.info("  📅 Date filter: %s", self._date_posted)
+        try:
+            btn = WebDriverWait(self.driver, 12).until(
+                EC.element_to_be_clickable((By.XPATH, XP_DATE_FILTER_BTN))
+            )
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", btn
+            )
+            btn.click()
+            self.human.random_delay(0.5, 1.0)
+
+            needle = self._date_posted
+            for xpath in (
+                f'//*[@role="menuitem" and contains(., "{needle}")]',
+                f'//*[contains(@role,"menu")]//*[contains(., "{needle}")]',
+                '//*[contains(., "Past week")]',
+            ):
+                try:
+                    opt = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, xpath))
+                    )
+                    opt.click()
+                    logger.info("  ✅ Date filter applied")
+                    return True
+                except TimeoutException:
+                    continue
+            logger.warning("  ⚠️ Date option not found — continuing")
+            return False
+        except Exception as exc:
+            logger.warning("  ⚠️ Date dropdown: %s", exc)
+            return False
 
     def find_jobs(self) -> list[dict]:
-        """
-        For each keyword:
-          1. Navigate to /jobs
-          2. Apply Past-week date filter
-          3. Apply Location filters (United States + San Francisco Bay Area)
-          4. Type keyword into search box → ENTER
-          5. Click each job card → new window → capture external ATS URL
-          6. Append each job record to OUTPUT_JSON
-        """
-        all_jobs: list[dict] = []
-        seen_ids: set[str]   = set()
-
-        for keyword in self._keywords:
-            logger.info("\n%s\n🔍 Keyword: '%s'\n%s", "─"*60, keyword, "─"*60)
-            try:
-                jobs = self._search_keyword(keyword, seen_ids)
-                all_jobs.extend(jobs)
-                for j in jobs:
-                    seen_ids.add(j["job_id"])
-                logger.info("  ✅ Keyword '%s': %d jobs collected (total so far: %d)",
-                            keyword, len(jobs), len(all_jobs))
-            except Exception as exc:
-                logger.error("  ❌ Error during keyword '%s': %s", keyword, exc)
-                import traceback; traceback.print_exc()
-
-        logger.info("\n✅ Total jobs collected: %d", len(all_jobs))
-        return all_jobs
-
-    # ────────────────────────────────────────────────────────────────────────
-    # apply (not used in Step 1 but kept for compatibility)
-    # ────────────────────────────────────────────────────────────────────────
+        if not self.navigate_to_my_jobs():
+            return []
+        self.apply_past_week_dropdown()
+        self.human.random_delay(2, 3)
+        return self._collect_myjobs_cards()
 
     def apply(self, job: dict) -> bool:
-        """Step 1 only captures URLs; actual application is Step 2."""
-        logger.info("ℹ️ apply() called for '%s' — Step 1 only captures URLs.", job.get("title", "?"))
+        logger.info("ℹ️ apply() skipped — Step 1 only collects URLs")
         return True
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Private: search one keyword
-    # ────────────────────────────────────────────────────────────────────────
-
-    def _search_keyword(self, keyword: str, already_seen: set) -> list[dict]:
-        """
-        Full per-keyword flow:
-          1. Navigate to /jobs
-          2. Apply Past-week filter
-          3. Apply location filters
-          4. Type keyword → ENTER
-          5. Collect jobs by clicking each card
-        """
-        # ── Navigate to /jobs ─────────────────────────────────────────────────
-        logger.info("  🌐 Navigating to %s", JOBS_URL)
-        self.driver.get(JOBS_URL)
-        WebDriverWait(self.driver, 20).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        self.human.random_delay(3, 5)
-
-        # ── Apply Past-week date filter ───────────────────────────────────────
-        self._apply_past_week_filter()
-        self.human.random_delay(1, 2)
-
-        # ── Apply location filters ────────────────────────────────────────────
-        self._apply_location_filter("United States")
-        self.human.random_delay(1, 2)
-        self._apply_location_filter("San Francisco Bay Area")
-
-        # ⚠️  CRITICAL: Wait for React to fully settle after filter clicks.
-        # The location filter triggers React state updates which can steal focus
-        # or re-render the search box — causing typed text to vanish.
-        logger.info("  ⏳ Waiting for React to settle after filters (3s)...")
-        time.sleep(3)
-
-        # ── Type keyword → search ─────────────────────────────────────────────
-        logger.info("  ⌨️  Typing keyword: '%s'", keyword)
+    def _myjobs_show_more_visible(self) -> bool:
         try:
-            search_box = WebDriverWait(self.driver, 15).until(
-                EC.element_to_be_clickable((By.XPATH, XP_SEARCH_BOX))
-            )
+            for btn in self.driver.find_elements(By.XPATH, XP_MYJOBS_SHOW_MORE):
+                if btn.is_displayed() and btn.is_enabled():
+                    return True
+        except Exception:
+            pass
+        return False
 
-            # Step 1: Click the box to explicitly focus it
-            try:
-                search_box.click()
-            except Exception:
-                self.driver.execute_script("arguments[0].focus();", search_box)
-            self.human.random_delay(0.3, 0.5)
-
-            # Step 2: Clear using Ctrl+A + Delete (React-safe — fires onChange)
-            # DO NOT use search_box.clear() — it bypasses React synthetic events,
-            # causing React to restore the old value on the next re-render.
-            search_box.send_keys(Keys.CONTROL + "a")
-            time.sleep(0.2)
-            search_box.send_keys(Keys.DELETE)
-            time.sleep(0.3)
-
-            # Step 3: Verify box is truly empty via JS, then type
-            actual_val = self.driver.execute_script("return arguments[0].value;", search_box)
-            if actual_val:
-                # Force-clear via React-compatible JS event dispatch
-                self.driver.execute_script(
-                    """
-                    var el = arguments[0];
-                    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value').set;
-                    nativeInputValueSetter.call(el, '');
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    """,
-                    search_box,
-                )
-                time.sleep(0.3)
-
-            # Step 4: Type keyword character by character (human-like)
-            self.human.human_type(search_box, keyword)
-            self.human.random_delay(0.5, 1.0)
-
-            # Step 5: Verify keyword is actually in the box before submitting
-            typed_val = self.driver.execute_script("return arguments[0].value;", search_box)
-            if not typed_val or keyword.lower() not in typed_val.lower():
-                logger.warning(
-                    "  ⚠️ Search box shows '%s' instead of '%s' — retrying type",
-                    typed_val, keyword
-                )
-                # Re-clear and re-type via JS to force React to accept the value
-                self.driver.execute_script(
-                    """
-                    var el = arguments[0];
-                    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value').set;
-                    nativeInputValueSetter.call(el, arguments[1]);
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    """,
-                    search_box, keyword,
-                )
-                time.sleep(0.5)
-
-            # Step 6: Submit
-            search_box.send_keys(Keys.RETURN)
-            logger.info("  ✅ Keyword '%s' submitted", keyword)
-        except Exception as exc:
-            logger.error("  ❌ Could not find/use search box: %s", exc)
-            return []
-
-        self.human.random_delay(3, 5)
-
-        # ── Collect jobs ──────────────────────────────────────────────────────
-        return self._collect_jobs(keyword, already_seen)
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Private: apply date filter (Past week)
-    # ────────────────────────────────────────────────────────────────────────
-
-    def _apply_past_week_filter(self):
-        """Click the 'Past week' radio label using the exact user XPath."""
-        logger.info("  📅 Applying 'Past week' date filter...")
+    def _count_myjobs_job_links(self) -> int:
         try:
-            el = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, XP_PAST_WEEK_FILTER))
-            )
-            self.driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});", el
-            )
-            self.human.random_delay(0.5, 1.0)
-            try:
-                el.click()
-            except Exception:
-                self.driver.execute_script("arguments[0].click();", el)
-            logger.info("  ✅ Past week filter applied")
-            self.human.random_delay(1, 2)
-        except Exception as exc:
-            logger.warning("  ⚠️ Could not apply Past week filter: %s", str(exc).split('\n')[0])
+            return len(self.driver.find_elements(By.XPATH, XP_MYJOBS_JOB_LINKS))
+        except Exception:
+            return 0
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Private: apply location filter
-    # ────────────────────────────────────────────────────────────────────────
-
-    def _apply_location_filter(self, location_text: str):
-        """
-        Type a location string into the location search input and click
-        the first result label (li[1]/label).
-        """
-        logger.info("  🌍 Applying location filter: '%s'", location_text)
+    def _wait_for_more_job_cards(self, prev_count: int, timeout: int = 20) -> bool:
         try:
-            # Find location search input
-            loc_input = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, XP_LOCATION_SEARCH))
+            WebDriverWait(self.driver, timeout).until(
+                lambda d: self._count_myjobs_job_links() > prev_count
             )
-            self.driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});", loc_input
-            )
-            self.human.random_delay(0.3, 0.6)
+            return True
+        except TimeoutException:
+            return False
 
-            # Clear via Ctrl+A + Delete (React-friendly)
-            loc_input.send_keys(Keys.CONTROL + "a")
-            loc_input.send_keys(Keys.DELETE)
-            self.human.random_delay(0.2, 0.4)
-
-            # Type location
-            self.human.human_type(loc_input, location_text)
-            self.human.random_delay(1.5, 2.5)  # Wait for dropdown to filter
-
-            # Click first result label
-            first_result = WebDriverWait(self.driver, 8).until(
-                EC.element_to_be_clickable((By.XPATH, XP_LOCATION_FIRST))
-            )
-            try:
-                first_result.click()
-            except Exception:
-                self.driver.execute_script("arguments[0].click();", first_result)
-
-            logger.info("  ✅ Location '%s' selected", location_text)
-            self.human.random_delay(0.8, 1.5)
-
-        except Exception as exc:
-            logger.warning(
-                "  ⚠️ Location filter '%s' failed: %s",
-                location_text, str(exc).split('\n')[0]
-            )
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Private: collect jobs (click each card → new window → capture URL)
-    # ────────────────────────────────────────────────────────────────────────
-
-    def _collect_jobs(self, keyword: str, already_seen: set) -> list[dict]:
-        """
-        Page-level loop:
-          1. Find all job link <a> elements using exact user-provided XPath.
-          2. For each new link: click → new window → capture URL → close.
-          3. After processing all visible links, click 'Show more' if available.
-          4. Repeat until no Show More or max_jobs reached.
-          5. Save entire keyword batch to output_jobs.json at the end.
-        """
-        from selenium.webdriver.common.action_chains import ActionChains
-
-        collected: list[dict] = []
-        local_seen: set       = set()
-        main_window           = self.driver.current_window_handle
-        page_num              = 0
-
-        while True:
-            page_num += 1
-
-            # ── 1. Collect all visible job link <a> elements ──────────────────
-            # XPath from user: .../div[2]/div[2]/div/div/div/div[N]/div/div/div[1]/div[2]/div[1]/div/a
-            # We use wildcard div (no index) so it matches ALL card positions at once.
-            try:
-                raw_links = self.driver.find_elements(By.XPATH, XP_JOB_LINKS)
-            except Exception:
-                raw_links = []
-
-            # Deduplicate by href, skip empty hrefs
-            seen_hrefs: set = set()
-            job_links = []
-            for a in raw_links:
-                try:
-                    h = (a.get_attribute("href") or "").strip()
-                    # The XPath targets job cards tightly, so any href here is the ATS URL
-                    if h and h not in seen_hrefs and a.is_displayed():
-                        seen_hrefs.add(h)
-                        job_links.append((a, h))
-                except Exception:
-                    continue
-
-            logger.info("  📄 Page %d — %d unique job links found", page_num, len(job_links))
-
-            # ── 2. Click each NEW job link ────────────────────────────────────
-            for link_el, href in job_links:
-                job_id = _job_id_from_url(href)
-                if not job_id or job_id in already_seen or job_id in local_seen:
-                    continue
-
-                # Scroll link into view
-                try:
-                    self.driver.execute_script(
-                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});",
-                        link_el,
-                    )
-                    self.human.random_delay(0.5, 1.0)
-                except Exception:
-                    pass
-
-                # Read job title from the link text (it contains the title on TrueUp)
-                title = ""
-                try:
-                    title = link_el.text.strip()
-                except Exception:
-                    pass
-
-                # ── Click → new window → capture URL → close ─────────────────
-                ats_url = ""
-                try:
-                    try:
-                        ActionChains(self.driver).move_to_element(link_el).click().perform()
-                    except Exception:
-                        try:
-                            link_el.click()
-                        except Exception:
-                            self.driver.execute_script("arguments[0].click();", link_el)
-
-                    # Wait up to 12s for a new tab/window
-                    WebDriverWait(self.driver, 12).until(
-                        lambda d: len(d.window_handles) > 1
-                    )
-
-                    # Switch to the new window
-                    for handle in self.driver.window_handles:
-                        if handle != main_window:
-                            self.driver.switch_to.window(handle)
-                            break
-
-                    # Let the page load
-                    time.sleep(2)
-                    try:
-                        WebDriverWait(self.driver, 12).until(
-                            lambda d: d.execute_script("return document.readyState") == "complete"
-                        )
-                    except Exception:
-                        pass
-                    time.sleep(1)
-
-                    ats_url = self.driver.current_url
-                    logger.info("   ✅ [%d] %s", len(collected) + 1, ats_url)
-
-                    # Close new window → back to results
-                    self.driver.close()
-                    self.driver.switch_to.window(main_window)
-                    self.human.random_delay(1.0, 2.0)
-
-                except TimeoutException:
-                    logger.warning("   ⚠️ New window did not open for %s — using href", job_id)
-                    self._cleanup_extra_windows(main_window)
-                    ats_url = href
-
-                except Exception as e_click:
-                    logger.warning("   ⚠️ Click/capture error for %s: %s", job_id, e_click)
-                    self._cleanup_extra_windows(main_window)
-                    ats_url = href
-
-                # ── Record the job ────────────────────────────────────────────
-                job_record = {
-                    "job_id":         job_id,
-                    "title":          title or f"Job {job_id}",
-                    "trueup_url":     href,
-                    "ats_url":        ats_url,
-                    "source_keyword": keyword,
-                    "scraped_at":     datetime.now().isoformat(),
-                }
-                local_seen.add(job_id)
-                collected.append(job_record)
-
-            # ── 3. Click "Show more" to load the next batch of cards ──────────
-            if self._click_show_more():
-                logger.info("  ➕ 'Show more' clicked — loading next batch...")
-                self.human.random_delay(2, 4)
-            else:
-                logger.info("  ⏹ No 'Show more' button — end of results for this keyword")
-                break
-
-        # ── 4. Save all jobs for this keyword at once ─────────────────────────
-        _save_keyword_batch(keyword, collected)
-        logger.info("  ✅ Collected %d jobs for keyword '%s'", len(collected), keyword)
-        return collected
-
-    def _click_show_more(self) -> bool:
-        """
-        Click the 'Show more' button that appears after ~16 cards.
-        XPath from user: .../div[2]/div[2]/div/div/div/div/button
-        Returns True if button was found and clicked.
-        """
+    def _click_myjobs_show_more(self) -> bool:
+        if not self._myjobs_show_more_visible():
+            return False
         try:
-            # Scroll to bottom so the button is visible
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(1)
-
-            btn = WebDriverWait(self.driver, 6).until(
-                EC.element_to_be_clickable((By.XPATH, XP_SHOW_MORE))
+            btn = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, XP_MYJOBS_SHOW_MORE))
             )
             self.driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});", btn
+                "arguments[0].scrollIntoView({block:'center'});", btn
             )
-            self.human.random_delay(0.5, 1.0)
             try:
                 btn.click()
             except Exception:
                 self.driver.execute_script("arguments[0].click();", btn)
-            logger.info("  ✅ 'Show more' clicked")
+            logger.info("  ➕ Show more clicked")
+            self.human.random_delay(2, 4)
             return True
-        except (TimeoutException, NoSuchElementException):
-            return False
         except Exception as exc:
-            logger.debug("  _click_show_more error: %s", exc)
+            logger.warning("  ⚠️ Show more click failed: %s", exc)
             return False
 
+    def _gather_new_myjobs_links(self, seen_hrefs: set[str]) -> list[tuple[str, str]]:
+        pending: list[tuple[str, str]] = []
+        for link_el in self.driver.find_elements(By.XPATH, XP_MYJOBS_JOB_LINKS):
+            try:
+                href = (link_el.get_attribute("href") or "").strip()
+                if not href or href in seen_hrefs or not link_el.is_displayed():
+                    continue
+                pending.append((href, (link_el.text or "").strip()))
+            except StaleElementReferenceException:
+                continue
+        return pending
+
+    def _click_myjobs_link_by_href(self, href: str, main_window: str) -> str:
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        link_el = None
+        for el in self.driver.find_elements(By.XPATH, XP_MYJOBS_JOB_LINKS):
+            try:
+                if (el.get_attribute("href") or "").strip() == href:
+                    link_el = el
+                    break
+            except StaleElementReferenceException:
+                continue
+        if not link_el:
+            return ""
+
+        self.driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});", link_el
+        )
+        self.human.random_delay(0.4, 0.8)
+
+        try:
+            ActionChains(self.driver).move_to_element(link_el).click().perform()
+        except Exception:
+            try:
+                link_el.click()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", link_el)
+
+        WebDriverWait(self.driver, 12).until(lambda d: len(d.window_handles) > 1)
+        for handle in self.driver.window_handles:
+            if handle != main_window:
+                self.driver.switch_to.window(handle)
+                break
+        time.sleep(2)
+        ats_url = self.driver.current_url
+        self.driver.close()
+        self.driver.switch_to.window(main_window)
+        self.human.random_delay(1.0, 2.0)
+        return ats_url
+
     def _cleanup_extra_windows(self, main_window: str):
-        """Close any extra windows/tabs and switch back to main_window."""
         for handle in self.driver.window_handles:
             if handle != main_window:
                 try:
@@ -793,60 +377,69 @@ class TrueUpStrategy(BaseStrategy):
         except Exception:
             pass
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Private: DB persistence (optional)
-    # ────────────────────────────────────────────────────────────────────────
+    def _collect_myjobs_cards(self) -> list[dict]:
+        collected: list[dict] = []
+        seen_hrefs: set[str] = set()
+        seen_ids: set[str] = set()
+        main_window = self.driver.current_window_handle
+        batch_num = 0
 
-    def _save_listing_to_db(self, job: dict):
-        """Upsert a discovered JobListing into DuckDB (if db_session available)."""
-        if not self.db_session or not self.job_site or not self.job_site.id:
-            return
-        try:
-            existing = (
-                self.db_session.query(JobListing)
-                .filter(
-                    JobListing.job_site_id == self.job_site.id,
-                    JobListing.external_job_id == job["job_id"],
-                )
-                .first()
+        while batch_num < 100:
+            batch_num += 1
+            pending = self._gather_new_myjobs_links(seen_hrefs)
+            logger.info(
+                "  📄 Batch %d — %d new links (%d saved)",
+                batch_num, len(pending), len(collected),
             )
-            if not existing:
-                listing = JobListing(
-                    job_site_id     = self.job_site.id,
-                    external_job_id = job["job_id"],
-                    job_title       = job.get("title", ""),
-                    job_url         = job.get("ats_url") or job.get("trueup_url", ""),
-                    status          = "discovered",
-                )
-                self.db_session.add(listing)
-                self.db_session.commit()
-        except Exception as exc:
-            logger.warning("  ⚠️ DB save failed for '%s': %s", job.get("title"), exc)
-            try:
-                self.db_session.rollback()
-            except Exception:
-                pass
 
-    def _save_to_db(self, job: dict, ats_url: str):
-        """Update the JobListing status to 'discovered' with ATS URL."""
-        if not self.db_session or not self.job_site or not self.job_site.id:
-            return
-        try:
-            listing = (
-                self.db_session.query(JobListing)
-                .filter(
-                    JobListing.job_site_id == self.job_site.id,
-                    JobListing.external_job_id == job["job_id"],
-                )
-                .first()
-            )
-            if listing:
-                listing.status  = "discovered"
-                listing.job_url = ats_url
-                self.db_session.commit()
-        except Exception as exc:
-            logger.warning("  ⚠️ DB update failed: %s", exc)
-            try:
-                self.db_session.rollback()
-            except Exception:
-                pass
+            if not pending:
+                if batch_num == 1:
+                    logger.warning("  ⚠️ No job links on page")
+                break
+
+            for trueup_href, title in pending:
+                job_id = _job_id_from_url(trueup_href) or str(hash(trueup_href))
+                if job_id in seen_ids or trueup_href in seen_hrefs:
+                    continue
+
+                try:
+                    ats_url = self._click_myjobs_link_by_href(trueup_href, main_window)
+                except TimeoutException:
+                    logger.warning("   ⚠️ No new tab — skip")
+                    self._cleanup_extra_windows(main_window)
+                    continue
+                except Exception as exc:
+                    logger.warning("   ⚠️ Click failed: %s", exc)
+                    self._cleanup_extra_windows(main_window)
+                    continue
+
+                if not ats_url or ("trueup.io" in ats_url and "myjobs" in ats_url):
+                    continue
+
+                record = {
+                    "job_id": _job_id_from_url(ats_url) or job_id,
+                    "title": title or f"Job {job_id}",
+                    "trueup_url": trueup_href,
+                    "ats_url": ats_url,
+                    "source_keyword": "myjobs",
+                    "scraped_at": datetime.now().isoformat(),
+                }
+                seen_hrefs.add(trueup_href)
+                seen_ids.add(record["job_id"])
+                collected.append(record)
+                _append_to_output(record)
+                logger.info("   ✅ [%d] %s", len(collected), ats_url[:100])
+
+            if not self._myjobs_show_more_visible():
+                logger.info("  ⏹ Done — no Show more button")
+                break
+
+            before = self._count_myjobs_job_links()
+            if not self._click_myjobs_show_more():
+                break
+            if not self._wait_for_more_job_cards(before):
+                logger.warning("  ⚠️ List did not grow after Show more")
+                break
+
+        logger.info("  ✅ Collected %d jobs (%d batches)", len(collected), batch_num)
+        return collected

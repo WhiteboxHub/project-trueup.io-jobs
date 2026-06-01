@@ -1,18 +1,13 @@
 """
 run_trueup.py  —  Standalone TrueUp launcher
 =============================================
-Step 1: Login → Apply Filters → Search keywords → Extract external job links
+Step 1: Login → My Jobs feed → Past week → click cards → save URLs
 
 Flow:
-  1. Open https://trueup.io (homepage)
-  2. Click Login button → go to sign-in page
-  3. Enter email + password → Continue
-  4. Wait 60 seconds for manual OTP entry
-  5. Site redirects to https://trueup.io/ after OTP
-  6. Click "Search all jobs" → lands on /jobs
-  7. Apply filters: Past week + United States + San Francisco Bay Area
-  8. Search keyword "ai" → click each job → capture URL → save to output_jobs.json
-  9. Repeat for all keywords (genai, etc.)
+  1. Login (email, password, manual OTP)
+  2. Nav → Jobs (my jobs feed)
+  3. Date dropdown → Past week
+  4. Click each job card → capture ATS URL from new tab → output_jobs.json
 
 Usage:
     python run_trueup.py
