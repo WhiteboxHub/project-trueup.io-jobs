@@ -49,7 +49,7 @@ AUTH_PASSWORD=...
 Optional `config/trueup.json`:
 
 ```json
-{ "date_posted": "Past week" }
+{ "date_posted": "Past week only" }
 ```
 
 ## Pipeline

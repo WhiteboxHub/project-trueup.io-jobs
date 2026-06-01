@@ -36,7 +36,13 @@ XP_PASSWORD_FIELD = '//*[@id="password-field"]'
 XP_CONTINUE_PASSWORD = '//*[@id="__next"]/div/main/div[2]/div/div/div/div[2]/form/button[2]'
 
 XP_NAV_JOBS = '//*[@id="main-nav"]/nav/nav/div[1]/ul/li[1]/a'
-XP_DATE_FILTER_BTN = '//*[@id="__next"]/div/main/div/div/div/div[1]/div/form/div/div/button'
+# SHOW row on /myjobs — three dropdowns; date filter is the past-week control
+XP_SHOW_FILTER_ROW = (
+    '//*[@id="__next"]/div/main/div/div/div/div[1]/div/form/div/div/div'
+)
+XP_PAST_WEEK_DROPDOWN_BTN = (
+    '//*[@id="__next"]/div/main/div/div/div/div[1]/div/form/div/div/button'
+)
 XP_MYJOBS_JOB_LINKS = (
     '//*[@id="__next"]/div/main/div/div/div/div[1]/div/div[2]/div/div/div'
     '/div[1]/div[2]/div[1]/div/a'
@@ -47,6 +53,24 @@ XP_MYJOBS_SHOW_MORE = (
 
 OUTPUT_JSON = "output_jobs.json"
 OTP_WAIT_SECONDS = 60
+
+# TrueUp My Jobs label for the date dropdown (config may use shorter aliases)
+DATE_FILTER_UI_LABEL = "Past week only"
+DATE_FILTER_ALIASES = (
+    "Past week only",
+    "Past week",
+    "pastweek",
+    "past week",
+    "past_week",
+)
+
+
+def _normalize_date_filter(value: str) -> str:
+    """Map config values to the label shown in the SHOW date dropdown."""
+    key = (value or "").strip().lower().replace("_", " ").replace("-", " ")
+    if key in ("past week", "pastweek", "past week only"):
+        return DATE_FILTER_UI_LABEL
+    return (value or DATE_FILTER_UI_LABEL).strip()
 
 
 def _load_trueup_config() -> dict:
@@ -114,7 +138,9 @@ class TrueUpStrategy(BaseStrategy):
         self.human = HumanBehavior(driver)
 
         cfg = _load_trueup_config()
-        self._date_posted = (cfg.get("date_posted") or "Past week").strip()
+        self._date_posted = _normalize_date_filter(
+            cfg.get("date_posted") or DATE_FILTER_UI_LABEL
+        )
         self._email = os.environ.get("TRUEUP_EMAIL", "")
         self._password = os.environ.get("TRUEUP_PASSWORD", "")
 
@@ -210,46 +236,137 @@ class TrueUpStrategy(BaseStrategy):
             except Exception:
                 self.driver.execute_script("arguments[0].click();", nav)
             WebDriverWait(self.driver, 20).until(
-                lambda d: "myjobs" in d.current_url or "jobs" in d.current_url
+                lambda d: "myjobs" in d.current_url.lower()
             )
             self.human.random_delay(2, 4)
-            return True
         except Exception as exc:
             logger.warning("⚠️ Nav Jobs failed: %s — direct URL", exc)
+
+        if "myjobs" not in self.driver.current_url.lower():
             self.driver.get(MYJOBS_URL)
-            WebDriverWait(self.driver, 20).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
+        WebDriverWait(self.driver, 20).until(
+            EC.presence_of_element_located((By.XPATH, XP_SHOW_FILTER_ROW))
+        )
+        self.human.random_delay(1, 2)
+        return True
+
+    def _past_week_dropdown_button(self):
+        """Past-week control in the SHOW row (sibling of the three-dropdown container)."""
+        WebDriverWait(self.driver, 15).until(
+            EC.presence_of_element_located((By.XPATH, XP_SHOW_FILTER_ROW))
+        )
+        # Prefer button adjacent to SHOW container; fall back to absolute xpath
+        for xpath in (
+            f"{XP_SHOW_FILTER_ROW}/../button",
+            XP_PAST_WEEK_DROPDOWN_BTN,
+        ):
+            try:
+                btn = WebDriverWait(self.driver, 8).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath))
+                )
+                if btn.is_displayed():
+                    return btn
+            except TimeoutException:
+                continue
+        raise TimeoutException("Past week dropdown button not found in SHOW row")
+
+    def _dropdown_button_label(self, btn) -> str:
+        try:
+            return (btn.text or btn.get_attribute("innerText") or "").strip()
+        except StaleElementReferenceException:
+            return ""
+
+    def _date_filter_option_labels(self) -> list[str]:
+        labels = [self._date_posted]
+        for alias in DATE_FILTER_ALIASES:
+            if alias not in labels:
+                labels.append(alias)
+        return labels
+
+    def _click_dropdown_option(self, labels: list[str]) -> bool:
+        """Click a visible menu option matching one of the date labels."""
+        for label in labels:
+            fragments = (
+                f'//*[@role="menuitem" and contains(normalize-space(.), "{label}")]',
+                f'//*[@role="option" and contains(normalize-space(.), "{label}")]',
+                (
+                    '//*[@data-radix-popper-content-wrapper]'
+                    f'//*[contains(normalize-space(.), "{label}")]'
+                ),
+                f'//*[@role="menu"]//*[contains(normalize-space(.), "{label}")]',
+                f'//*[@role="listbox"]//*[contains(normalize-space(.), "{label}")]',
             )
+            for xpath in fragments:
+                try:
+                    opts = self.driver.find_elements(By.XPATH, xpath)
+                    for opt in opts:
+                        if not opt.is_displayed():
+                            continue
+                        try:
+                            self.driver.execute_script(
+                                "arguments[0].scrollIntoView({block:'center'});", opt
+                            )
+                            opt.click()
+                        except Exception:
+                            self.driver.execute_script(
+                                "arguments[0].click();", opt
+                            )
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    def _wait_for_date_filter_applied(self, btn_label_before: str) -> bool:
+        def _applied(_driver):
+            try:
+                btn = self._past_week_dropdown_button()
+                label = self._dropdown_button_label(btn).lower()
+                if "past week" in label:
+                    return True
+                if btn_label_before and label != btn_label_before.lower():
+                    return True
+            except Exception:
+                pass
+            return False
+
+        try:
+            WebDriverWait(self.driver, 12).until(_applied)
             return True
+        except TimeoutException:
+            return False
 
     def apply_past_week_dropdown(self) -> bool:
-        logger.info("  📅 Date filter: %s", self._date_posted)
+        logger.info("  📅 SHOW date filter → %s", self._date_posted)
         try:
-            btn = WebDriverWait(self.driver, 12).until(
-                EC.element_to_be_clickable((By.XPATH, XP_DATE_FILTER_BTN))
-            )
+            btn = self._past_week_dropdown_button()
+            current = self._dropdown_button_label(btn).lower()
+            if "past week" in current:
+                logger.info("  ✅ Date filter already set (%s)", current)
+                return True
+
             self.driver.execute_script(
                 "arguments[0].scrollIntoView({block:'center'});", btn
             )
-            btn.click()
-            self.human.random_delay(0.5, 1.0)
+            try:
+                btn.click()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", btn)
+            self.human.random_delay(0.6, 1.2)
 
-            needle = self._date_posted
-            for xpath in (
-                f'//*[@role="menuitem" and contains(., "{needle}")]',
-                f'//*[contains(@role,"menu")]//*[contains(., "{needle}")]',
-                '//*[contains(., "Past week")]',
-            ):
-                try:
-                    opt = WebDriverWait(self.driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, xpath))
-                    )
-                    opt.click()
-                    logger.info("  ✅ Date filter applied")
-                    return True
-                except TimeoutException:
-                    continue
-            logger.warning("  ⚠️ Date option not found — continuing")
+            if not self._click_dropdown_option(self._date_filter_option_labels()):
+                logger.warning("  ⚠️ Could not click '%s' in dropdown", self._date_posted)
+                return False
+
+            self.human.random_delay(0.8, 1.5)
+            if self._wait_for_date_filter_applied(current):
+                final = self._dropdown_button_label(
+                    self._past_week_dropdown_button()
+                )
+                logger.info("  ✅ Date filter applied — button shows: %s", final)
+                self.human.random_delay(2, 3)
+                return True
+
+            logger.warning("  ⚠️ Dropdown clicked but button label did not update")
             return False
         except Exception as exc:
             logger.warning("  ⚠️ Date dropdown: %s", exc)
